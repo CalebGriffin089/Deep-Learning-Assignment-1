@@ -50,55 +50,35 @@ class NeuralNetwork(nn.Module):
         logits = self.linear_relu_stack(x)
         return logits
     
-    def trainDataLoader(self, trainData, batchSize, numWorkers):
-        return DataLoader(
-            trainData,
-            batch_size=batchSize,
-            num_workers=numWorkers,
-            worker_init_fn=self.seed_worker,
-            generator=g,
-        )
-    
+class TesterTrainer():
+    def __init__(self, network):
+        self.nn = network.to(device)
+
     def seed_worker(self, worker_id):
-       
         worker_seed = torch.initial_seed() % 2**32
         np.random.seed(worker_seed)
         random.seed(worker_seed)
         return worker_seed
-    
-    def train(self, trainData, epochs, batchSize, numWorkers):
-        for i in range(epochs):
-            loss = self.trainOneEpoch(trainData, batchSize, numWorkers)
-            print(f"Epoch: {i+1}, Loss: {sum(loss)/len(loss)}")
-        return
 
-    def trainOneEpoch(self, trainData, batchSize, numWorkers):
-        runningLoss = 0.
-        lastLoss = 0.
-        allLoss = []
+    def dataLoader(self, trainData, batchSize, numWorkers):
+        if numWorkers > 0:
+            return DataLoader(
+                trainData,
+                batch_size=batchSize,
+                num_workers=numWorkers,
+                worker_init_fn=self.seed_worker,
+                generator=g,
+                persistent_workers=True 
+            )
+        else:
+            return DataLoader(
+                trainData,
+                batch_size=batchSize,
+                num_workers=numWorkers,
+                worker_init_fn=self.seed_worker,
+                generator=g,
+            )
 
-        for i, data in enumerate(self.trainDataLoader(trainData, batchSize, numWorkers)):
-
-            inputs, labels = data
-            inputs, labels = inputs.to(device), labels.to(device)
-
-            optimizer.zero_grad()
-
-            logits = self.forward(inputs)
-            loss = self.getLoss(logits, labels)
-            runningLoss += loss.item()
-
-            loss.backward()
-            optimizer.step()
-
-            
-            if i % 100 == 99:
-                lastLoss = runningLoss / 100 
-                allLoss.append(lastLoss)
-                print('  batch {} loss: {}'.format(i + 1, lastLoss))
-                runningLoss = 0.
-
-        return allLoss
     
     def getLoss(self, logits, labels):
 
@@ -113,15 +93,51 @@ class NeuralNetwork(nn.Module):
         correct = (predicted == labels).sum().item()
         return correct
     
-    def test(self, testData, batchSize):
-        testData = DataLoader(testData, batch_size=batchSize, shuffle=False)
+
+    def train(self, trainData, epochs, batchSize, numWorkers):
+        dataLoader = self.dataLoader(trainData, batchSize, numWorkers)
+        for i in range(epochs):
+            loss = self.trainOneEpoch(dataLoader)
+            print(f"Epoch: {i+1}, Loss: {sum(loss)/len(loss)}")
+        return
+
+    def trainOneEpoch(self, dataLoader):
+        runningLoss = 0.
+        lastLoss = 0.
+        allLoss = []
+
+        for i, data in enumerate(dataLoader):
+
+            inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+
+            logits = self.nn.forward(inputs)
+            loss = self.getLoss(logits, labels)
+            runningLoss += loss.item()
+
+            loss.backward()
+            optimizer.step()
+
+            
+            if i % 100 == 99:
+                lastLoss = runningLoss / 100 
+                allLoss.append(lastLoss)
+                print('  batch {} loss: {}'.format(i + 1, lastLoss))
+                runningLoss = 0.
+
+        return allLoss
+
+    def test(self, testData, batchSize, numWorkers):
+        testData = self.dataLoader(testData, batchSize, numWorkers)
         totalLoss = 0
         correct = 0
         samples = 0
 
         for inputs, labels in testData:
             inputs, labels = inputs.to(device), labels.to(device)
-            logits = self.forward(inputs)
+            logits = self.nn.forward(inputs)
 
             loss = self.getLoss(logits, labels)
             totalLoss += loss.item() * inputs.size(0)
@@ -135,18 +151,21 @@ class NeuralNetwork(nn.Module):
         print(f"Test Loss: {avgLoss:.4f}, Test Accuracy: {accuracy*100:.2f}%")
         return avgLoss, accuracy
 
+
 imgSize = 32*32
 numbChannles = 3
 outputs = 10
-batchSize = 50
-epochs = 10
-numWorkers = 1
+batchSize = 100
+epochs = 50
+trainNumWorkers = 4
+testNumWorkers = 2
 learningRate = 0.001
 
 
 if __name__ == "__main__":
     model = NeuralNetwork().to(device)
+    testerTrainer = TesterTrainer(model)
     optimizer = torch.optim.Adam(model.parameters(), learningRate)
-    model.train(train_data, epochs, batchSize, numWorkers)
 
-    testLoss, testAcc = model.test(test_data, batchSize)
+    testerTrainer.train(train_data, epochs, batchSize, trainNumWorkers)
+    testLoss, testAcc = testerTrainer.test(test_data, batchSize, testNumWorkers)
