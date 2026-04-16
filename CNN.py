@@ -48,66 +48,69 @@ class Net(nn.Module):
         self.createLayers(numbConvLayers, numbFCLayers, imgSize, FClayerNeurons, numbClasses, cLayerblockSize)
 
     def createLayers(self, numbConvLayers, numbFCLayers, imgSize, FClayerNeurons, numbClasses, cLayerblockSize):
-        finalOutChannels, cLayerNumBlocks = self.createConvLayers(numbConvLayers, cLayerblockSize)
-
-        print(f"Convolutional layers: {len(self.cLayers)}")
-        print(f"Output channels after last layer: {finalOutChannels}")
-        print(f"Number of blocks: {cLayerNumBlocks}")
-        self.createFCLayers(finalOutChannels, cLayerNumBlocks, imgSize, FClayerNeurons, numbClasses, numbFCLayers)
+        self.createConvLayers(numbConvLayers, cLayerblockSize)
+        self.createFCLayers(imgSize, FClayerNeurons, numbClasses, numbFCLayers)
         return
     
     def createConvLayers(self, numbLayers, blockSize):
-        self.cLayers.append(nn.Conv2d(in_channels=3, out_channels=8, kernel_size=3, padding=1))
         inChannels  = 8
         outChannels = 8
         blocks = 0
+
+        self.cLayers.append(nn.Sequential(nn.Conv2d(in_channels=3, out_channels=8, kernel_size=3, padding=1), nn.BatchNorm2d(outChannels), nn.ReLU()))
+
         for i in range(numbLayers-1):
+
             if (i+1) % blockSize == 0 and i != 0:
                 outChannels = outChannels * 2
                 blocks += 1
-            self.cLayers.append(nn.Conv2d(inChannels, outChannels, kernel_size=3, padding=1))
+
+            self.cLayers.append(nn.Sequential(nn.Conv2d(inChannels, outChannels, kernel_size=3, padding=1), nn.BatchNorm2d(outChannels), nn.ReLU()))
+            nn.BatchNorm2d(outChannels)
             inChannels = outChannels
-        return outChannels, blocks
     
-    def createFCLayers(self, finalOutChannels, cLayerNumBlocks, imgSize, layerNeurons, numbClasses, numbLayers):
+    def createFCLayers(self, imgSize, layerNeurons, numbClasses, numbLayers):
         # cLayerNumBlocks is number of convolution blocks, which is also the number of pooling layers reducing the image size by 2 everytime
         finalImgSize = self.findFinalImgSize(imgSize)
 
-        self.fcLayers.append(nn.Linear(finalImgSize, layerNeurons))
+        self.fcLayers.append(nn.Sequential(nn.Linear(finalImgSize, layerNeurons), nn.ReLU()))
 
         # only do this if more than 2 layers are requested 2 are the minimum
         for i in range(numbLayers-2):
-            self.fcLayers.append(nn.Linear(layerNeurons, layerNeurons))
+            self.fcLayers.append(nn.Sequential(nn.Linear(layerNeurons, layerNeurons), nn.ReLU()))
 
-        self.fcLayers.append(nn.Linear(layerNeurons, numbClasses))
+        self.fcLayers.append(nn.Sequential(nn.Linear(layerNeurons, numbClasses), nn.ReLU()))
 
     def findFinalImgSize(self, imgSize):
-        dummyImg = torch.zeros(1, 3, imgSize, imgSize)
-        x = dummyImg 
+        self.eval()
+        with torch.no_grad():
+            dummyImg = torch.zeros(1, 3, imgSize, imgSize)
+            x = dummyImg 
 
-        for i, cLayer in enumerate(self.cLayers): 
-            x = F.relu(cLayer(x)) 
-            if (i + 1) % self.cLayerblockSize == 0: 
-                x = self.pool(x) 
+            for i, cLayer in enumerate(self.cLayers): 
+                x = cLayer(x)
 
-        in_features = x.view(1, -1).shape[1]
-        return in_features
+                if (i + 1) % self.cLayerblockSize == 0: 
+                    x = self.pool(x) 
+
+            in_features = x.view(1, -1).shape[1]
+            self.train()
+            return in_features
+        
 
     def forward(self, x):
 
         for i, cLayer in enumerate(self.cLayers):
-            x = F.relu(cLayer(x))
+            x = cLayer(x)
 
             if (i + 1) % self.cLayerblockSize == 0:
                 x = self.pool(x)
 
         x = torch.flatten(x, 1) # flatten all dimensions except batch
 
-        # fclayers except last
         for fcLayer in self.fcLayers[:-1]:
-            x = F.relu(fcLayer(x))
+            x = fcLayer(x)
 
-        # final layer
         x = self.fcLayers[-1](x)
 
         return x
@@ -159,24 +162,24 @@ class Tester():
 
         dataLoader = self.dataLoader(data, batchSize, trainNumWorkers)
 
-        for epoch in range(epochs):  # loop over the dataset multiple times
+        for epoch in range(epochs):  
 
             running_loss = 0.0
             for i, data in enumerate(dataLoader, 0):
-                # get the inputs; data is a list of [inputs, labels]
+                
                 inputs, labels = data
                 inputs, labels = inputs.to(device), labels.to(device)
 
-                # zero the parameter gradients
+                
                 optimizer.zero_grad()
 
-                # forward + backward + optimize
+                
                 outputs = self.nn.forward(inputs)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
 
-                # print statistics
+                
                 running_loss += loss.item()
                 if i % 100 == 99:    # print every 100 mini-batches
                     print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 100:.3f}')
@@ -214,13 +217,13 @@ if __name__ == "__main__":
     numbChannles = 3
     outputs = 10
     batchSize = 200
-    epochs = 100
-    trainNumWorkers = 3
+    epochs = 30
+    trainNumWorkers = 4
     testNumWorkers = 0
-    learningRate = 0.001
+    learningRate = 0.1
 
 
-    net = Net(imgSize, FClayerNeurons=120, numbClasses=10, cLayerblockSize=8, numbConvLayers=2, numbFCLayers=2)
+    net = Net(imgSize, FClayerNeurons=120, numbClasses=10, cLayerblockSize=7, numbConvLayers=32, numbFCLayers=4)
     trainer = Tester(net)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(net.parameters(), learningRate, momentum=0.9)
