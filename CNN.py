@@ -145,6 +145,16 @@ class Tester():
                 generator=g,
             )
 
+    def saveData(self, data, train):
+        with open(fileName, "a") as f:
+            if not train:
+                f.write(f"Training Done: \n Loss, Accuracy (%) \n")
+            for i in data:
+                if i == data[-1]:
+                    f.write(f"{i}\n")
+                else:
+                    f.write(f"{i},")
+
     def getLoss(self, logits, labels):
 
         lossFunc = nn.CrossEntropyLoss()
@@ -182,6 +192,8 @@ class Tester():
                 
                 running_loss += loss.item()
                 if i % 100 == 99:    # print every 100 mini-batches
+                    data = [epoch, i+1, running_loss/100]
+                    self.saveData(data, True)
                     print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 100:.3f}')
                     running_loss = 0.0
 
@@ -206,24 +218,27 @@ class Tester():
 
         avgLoss = totalLoss / samples
         accuracy = correct / samples
+        data  = [avgLoss, accuracy]
+        self.saveData(data, False)
         print(f"Test Loss: {avgLoss:.4f}, Test Accuracy: {accuracy*100:.2f}%")
         return avgLoss, accuracy
 
 
 
 if __name__ == "__main__":
-
+    fileName  = "output.txt"
     imgSize = 32
     numbChannles = 3
     outputs = 10
     batchSize = 200
-    epochs = 30
+    epochs = 20
     trainNumWorkers = 4
     testNumWorkers = 0
     learningRate = 0.1
+    with open(fileName, "a") as f:
+        f.write(f"Options:\n Epochs: {epochs}, BatchSize: {batchSize}, Loss:,  Learning Rate: {learningRate} \n")
 
-
-    net = Net(imgSize, FClayerNeurons=120, numbClasses=10, cLayerblockSize=7, numbConvLayers=32, numbFCLayers=4)
+    net = Net(imgSize, FClayerNeurons=120, numbClasses=10, cLayerblockSize=4, numbConvLayers=16, numbFCLayers=4)
     trainer = Tester(net)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(net.parameters(), learningRate, momentum=0.9)
