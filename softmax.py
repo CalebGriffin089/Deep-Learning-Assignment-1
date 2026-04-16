@@ -23,8 +23,8 @@ test_data = datasets.CIFAR10(
 )
 
 seed = 0
-g = torch.Generator()
-g.manual_seed(seed)
+globalRng = torch.Generator()
+globalRng.manual_seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 np.random.seed(seed)
@@ -67,7 +67,7 @@ class TesterTrainer():
                 batch_size=batchSize,
                 num_workers=numWorkers,
                 worker_init_fn=self.seed_worker,
-                generator=g,
+                generator=globalRng,
                 persistent_workers=True 
             )
         else:
@@ -76,7 +76,7 @@ class TesterTrainer():
                 batch_size=batchSize,
                 num_workers=numWorkers,
                 worker_init_fn=self.seed_worker,
-                generator=g,
+                generator=globalRng,
             )
 
     

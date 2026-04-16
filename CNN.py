@@ -7,6 +7,9 @@ import torch.nn.functional as F
 from torchvision import datasets, transforms
 import numpy as np, random
 import torch.optim as optim
+import time
+
+start = time.time()
 transform = transforms.ToTensor()
 
 train_data = datasets.CIFAR10(
@@ -24,8 +27,8 @@ test_data = datasets.CIFAR10(
 )
 
 seed = 0
-g = torch.Generator()
-g.manual_seed(seed)
+globalRng = torch.Generator()
+globalRng.manual_seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 np.random.seed(seed)
@@ -64,9 +67,11 @@ class Net(nn.Module):
             if (i+1) % blockSize == 0 and i != 0:
                 outChannels = outChannels * 2
                 blocks += 1
-
-            self.cLayers.append(nn.Sequential(nn.Conv2d(inChannels, outChannels, kernel_size=3, padding=1), nn.BatchNorm2d(outChannels), nn.ReLU()))
-            nn.BatchNorm2d(outChannels)
+            # every n cBlocks add dropout
+            if blocks %4 == 0:
+                self.cLayers.append(nn.Sequential(nn.Conv2d(inChannels, outChannels, kernel_size=3, padding=1), nn.BatchNorm2d(outChannels), nn.ReLU(), nn.Dropout2d(p=0.1)))
+            else:
+                self.cLayers.append(nn.Sequential(nn.Conv2d(inChannels, outChannels, kernel_size=3, padding=1), nn.BatchNorm2d(outChannels), nn.ReLU()))
             inChannels = outChannels
     
     def createFCLayers(self, imgSize, layerNeurons, numbClasses, numbLayers):
@@ -79,7 +84,7 @@ class Net(nn.Module):
         for i in range(numbLayers-2):
             self.fcLayers.append(nn.Sequential(nn.Linear(layerNeurons, layerNeurons), nn.ReLU()))
 
-        self.fcLayers.append(nn.Sequential(nn.Linear(layerNeurons, numbClasses), nn.ReLU()))
+        self.fcLayers.append(nn.Linear(layerNeurons, numbClasses))
 
     def findFinalImgSize(self, imgSize):
         self.eval()
@@ -133,7 +138,7 @@ class Tester():
                 batch_size=batchSize,
                 num_workers=numWorkers,
                 worker_init_fn=self.seed_worker,
-                generator=g,
+                generator=globalRng,
                 persistent_workers=True 
             )
         else:
@@ -142,7 +147,7 @@ class Tester():
                 batch_size=batchSize,
                 num_workers=numWorkers,
                 worker_init_fn=self.seed_worker,
-                generator=g,
+                generator=globalRng,
             )
 
     def saveData(self, data, train):
@@ -230,21 +235,24 @@ if __name__ == "__main__":
     imgSize = 32
     numbChannles = 3
     outputs = 10
-    batchSize = 200
-    epochs = 20
+    batchSize = 128
+    epochs = 30
     trainNumWorkers = 4
     testNumWorkers = 0
-    learningRate = 0.1
+    learningRate = 0.001
+
     with open(fileName, "a") as f:
         f.write(f"Options:\n Epochs: {epochs}, BatchSize: {batchSize}, Loss:,  Learning Rate: {learningRate} \n")
 
-    net = Net(imgSize, FClayerNeurons=120, numbClasses=10, cLayerblockSize=4, numbConvLayers=16, numbFCLayers=4)
+    net = Net(imgSize, FClayerNeurons=120, numbClasses=10, cLayerblockSize=8, numbConvLayers=32, numbFCLayers=4)
     trainer = Tester(net)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), learningRate, momentum=0.9)
-
-
-   
+    optimizer = optim.SGD(net.parameters(), learningRate, momentum=0.9, weight_decay = 1e-4)   
 
     trainer.train(train_data, epochs, batchSize, trainNumWorkers)
     trainer.test(test_data, batchSize, testNumWorkers)
+    end = time.time()
+    print(f"Time: {end-start}")
+
+    with open("output.txt", "a") as f:
+            f.write(f"Time: {end-start}\n")
