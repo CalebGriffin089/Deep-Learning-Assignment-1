@@ -33,29 +33,84 @@ random.seed(seed)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
-device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using {device} device")
 
 
 class Net(nn.Module):
-    def __init__(self):
+    def __init__(self, imgSize, FClayerNeurons, numbClasses, cLayerblockSize, numbConvLayers, numbFCLayers):
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 10)
+
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.cLayers = nn.ModuleList()
+        self.fcLayers = nn.ModuleList()
+        self.cLayerblockSize = cLayerblockSize
+        self.createLayers(numbConvLayers, numbFCLayers, imgSize, FClayerNeurons, numbClasses, cLayerblockSize)
+
+    def createLayers(self, numbConvLayers, numbFCLayers, imgSize, FClayerNeurons, numbClasses, cLayerblockSize):
+        finalOutChannels, cLayerNumBlocks = self.createConvLayers(numbConvLayers, cLayerblockSize)
+
+        print(f"Convolutional layers: {len(self.cLayers)}")
+        print(f"Output channels after last layer: {finalOutChannels}")
+        print(f"Number of blocks: {cLayerNumBlocks}")
+        self.createFCLayers(finalOutChannels, cLayerNumBlocks, imgSize, FClayerNeurons, numbClasses, numbFCLayers)
+        return
+    
+    def createConvLayers(self, numbLayers, blockSize):
+        self.cLayers.append(nn.Conv2d(in_channels=3, out_channels=8, kernel_size=3, padding=1))
+        inChannels  = 8
+        outChannels = 8
+        blocks = 0
+        for i in range(numbLayers-1):
+            if (i+1) % blockSize == 0 and i != 0:
+                outChannels = outChannels * 2
+                blocks += 1
+            self.cLayers.append(nn.Conv2d(inChannels, outChannels, kernel_size=3, padding=1))
+            inChannels = outChannels
+        return outChannels, blocks
+    
+    def createFCLayers(self, finalOutChannels, cLayerNumBlocks, imgSize, layerNeurons, numbClasses, numbLayers):
+        # cLayerNumBlocks is number of convolution blocks, which is also the number of pooling layers reducing the image size by 2 everytime
+        finalImgSize = self.findFinalImgSize(imgSize)
+
+        self.fcLayers.append(nn.Linear(finalImgSize, layerNeurons))
+
+        # only do this if more than 2 layers are requested 2 are the minimum
+        for i in range(numbLayers-2):
+            self.fcLayers.append(nn.Linear(layerNeurons, layerNeurons))
+
+        self.fcLayers.append(nn.Linear(layerNeurons, numbClasses))
+
+    def findFinalImgSize(self, imgSize):
+        dummyImg = torch.zeros(1, 3, imgSize, imgSize)
+        x = dummyImg 
+
+        for i, cLayer in enumerate(self.cLayers): 
+            x = F.relu(cLayer(x)) 
+            if (i + 1) % self.cLayerblockSize == 0: 
+                x = self.pool(x) 
+
+        in_features = x.view(1, -1).shape[1]
+        return in_features
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
+
+        for i, cLayer in enumerate(self.cLayers):
+            x = F.relu(cLayer(x))
+
+            if (i + 1) % self.cLayerblockSize == 0:
+                x = self.pool(x)
+
         x = torch.flatten(x, 1) # flatten all dimensions except batch
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
+
+        # fclayers except last
+        for fcLayer in self.fcLayers[:-1]:
+            x = F.relu(fcLayer(x))
+
+        # final layer
+        x = self.fcLayers[-1](x)
+
         return x
-    
 
 class Tester():
     def __init__(self, network):
@@ -69,15 +124,37 @@ class Tester():
         return worker_seed
 
     def dataLoader(self, trainData, batchSize, numWorkers):
-        return DataLoader(
-            trainData,
-            batch_size=batchSize,
-            num_workers=numWorkers,
-            worker_init_fn=self.seed_worker,
-            generator=g,
-            persistent_workers=True 
-        )
+        if numWorkers > 0:
+            return DataLoader(
+                trainData,
+                batch_size=batchSize,
+                num_workers=numWorkers,
+                worker_init_fn=self.seed_worker,
+                generator=g,
+                persistent_workers=True 
+            )
+        else:
+            return DataLoader(
+                trainData,
+                batch_size=batchSize,
+                num_workers=numWorkers,
+                worker_init_fn=self.seed_worker,
+                generator=g,
+            )
+
+    def getLoss(self, logits, labels):
+
+        lossFunc = nn.CrossEntropyLoss()
+        loss = lossFunc(logits, labels)
+        return loss
     
+    def getError(self, logits, labels):
+
+        outputs = torch.softmax(logits, dim=1)
+        _, predicted = torch.max(outputs, 1)
+        correct = (predicted == labels).sum().item()
+        return correct
+        
     def train(self, data, epochs, batchSize, trainNumWorkers):
 
         dataLoader = self.dataLoader(data, batchSize, trainNumWorkers)
@@ -106,23 +183,50 @@ class Tester():
                     running_loss = 0.0
 
         print('Finished Training')
-        
+    
+    def test(self, testData, batchSize, numWorkers):
+        testData = self.dataLoader(testData, batchSize, numWorkers)
+        totalLoss = 0
+        correct = 0
+        samples = 0
+
+        for inputs, labels in testData:
+            inputs, labels = inputs.to(device), labels.to(device)
+            logits = self.nn.forward(inputs)
+
+            loss = self.getLoss(logits, labels)
+            totalLoss += loss.item() * inputs.size(0)
+
+            correct += self.getError(logits, labels)
+
+            samples += labels.size(0)
+
+        avgLoss = totalLoss / samples
+        accuracy = correct / samples
+        print(f"Test Loss: {avgLoss:.4f}, Test Accuracy: {accuracy*100:.2f}%")
+        return avgLoss, accuracy
+
 
 
 if __name__ == "__main__":
-    net = Net()
-    trainer = Tester(net)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
 
-
-    imgSize = 32*32
+    imgSize = 32
     numbChannles = 3
     outputs = 10
     batchSize = 200
-    epochs = 10
-    trainNumWorkers = 4
+    epochs = 100
+    trainNumWorkers = 3
     testNumWorkers = 0
     learningRate = 0.001
 
+
+    net = Net(imgSize, FClayerNeurons=120, numbClasses=10, cLayerblockSize=8, numbConvLayers=2, numbFCLayers=2)
+    trainer = Tester(net)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(net.parameters(), learningRate, momentum=0.9)
+
+
+   
+
     trainer.train(train_data, epochs, batchSize, trainNumWorkers)
+    trainer.test(test_data, batchSize, testNumWorkers)
